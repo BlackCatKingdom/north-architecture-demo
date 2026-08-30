@@ -1,0 +1,96 @@
+name: Phase 5 NØRTH Accessibility Hardening
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/phase5-north-a11y.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test-package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch low-contrast utility text and cache version
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          css=Path('assets/styles.css')
+          s=css.read_text(encoding='utf-8')
+          replacements={
+            'color:#73756d':'color:#67685e',
+            'color:#72746b':'color:#67685e',
+            'color:#7a7c73':'color:#67685e',
+          }
+          for a,b in replacements.items(): s=s.replace(a,b)
+          marker='/* Phase 5 accessibility hardening · 20260830 */'
+          if marker not in s:
+            s += '\n'+marker+'\n.footer-bottom a{text-decoration:underline;text-underline-offset:3px;text-decoration-thickness:1px}\n'
+          css.write_text(s,encoding='utf-8')
+
+          for p in Path('.').rglob('*.html'):
+            t=p.read_text(encoding='utf-8')
+            t=t.replace('20260830-final1','20260830-a11y2')
+            p.write_text(t,encoding='utf-8')
+          PY
+
+      - name: Run local Lighthouse accessibility check
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m http.server 8080 --bind 127.0.0.1 >/tmp/north-http.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+          sleep 1
+          mkdir -p /tmp/lh && cd /tmp/lh
+          npm init -y >/dev/null 2>&1
+          npm install --no-save lighthouse >/dev/null 2>&1
+          npx lighthouse http://127.0.0.1:8080/ \
+            --quiet \
+            --chrome-flags='--headless=new --no-sandbox --disable-dev-shm-usage' \
+            --only-categories=accessibility,best-practices \
+            --output=json --output-path=/tmp/north-lighthouse.json
+          python3 - <<'PY'
+          import json
+          d=json.load(open('/tmp/north-lighthouse.json'))
+          a=round(d['categories']['accessibility']['score']*100)
+          b=round(d['categories']['best-practices']['score']*100)
+          print(f'Accessibility={a} BestPractices={b}')
+          assert a >= 95, f'Accessibility still below target: {a}'
+          PY
+
+      - name: Commit final NØRTH patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/phase5-north-a11y.yml
+          rmdir .github/workflows 2>/dev/null || true
+          rmdir .github 2>/dev/null || true
+          git add -A
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix: improve NØRTH accessibility contrast'
+          git push origin main
+
+      - name: Build deploy package
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/package/north.seekblack.cn
+          rsync -a --exclude='.git' --exclude='.github' --exclude='README.md' --exclude='.gitignore' ./ /tmp/package/north.seekblack.cn/
+
+      - name: Upload deploy package
+        uses: actions/upload-artifact@v4
+        with:
+          name: NORTH-Phase5-A11y-Hotfix
+          path: /tmp/package/north.seekblack.cn
+          if-no-files-found: error
+          retention-days: 7
